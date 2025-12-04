@@ -13,12 +13,17 @@ import org.springframework.stereotype.Service;
 import com.invoice.api.dto.ApiResponse;
 import com.invoice.api.dto.DtoInvoiceList;
 import com.invoice.api.dto.DtoProduct;
+import com.invoice.api.dto.DtoPurchase;
 import com.invoice.api.entity.CartItem;
 import com.invoice.api.entity.Invoice;
 import com.invoice.api.entity.InvoiceItem;
+import com.invoice.api.entity.PaymentInfo; 
+import com.invoice.api.entity.ShippingAddress;
 import com.invoice.api.repository.RepoCart;
 import com.invoice.api.repository.RepoInvoice;
 import com.invoice.api.repository.RepoInvoiceItem;
+import com.invoice.api.repository.RepoPaymentInfo; 
+import com.invoice.api.repository.RepoShippingAddress;
 import com.invoice.commons.mapper.MapperInvoice;
 import com.invoice.commons.util.JwtDecoder;
 import com.invoice.exception.ApiException;
@@ -46,6 +51,13 @@ public class SvcInvoiceImp implements SvcInvoice {
     
     @Autowired
     MapperInvoice mapper;
+    
+    
+    @Autowired
+    private RepoPaymentInfo repoPayment;
+    
+    @Autowired
+    private RepoShippingAddress repoAddress;
 
     @Override
     public List<DtoInvoiceList> findAll() {
@@ -81,17 +93,17 @@ public class SvcInvoiceImp implements SvcInvoice {
 
     @Override
     @Transactional(rollbackOn = Exception.class)
-    public ApiResponse create() {
+    public ApiResponse create(DtoPurchase purchaseData) {
         try {
             Integer userId = jwtDecoder.getUserId();
             
-            // 1. Identificar artículos del carrito
+            // 1. Validar carrito
             List<CartItem> cartItems = repoCart.findByUserId(userId);
             if (cartItems.isEmpty()) {
                 throw new ApiException(HttpStatus.NOT_FOUND, "El carrito está vacío");
             }
 
-            // 2. Crear y GUARDAR la factura inicial para obtener el ID
+            // 2. Crear y guardar factura inicial
             Invoice invoice = new Invoice();
             invoice.setUser_id(userId);
             invoice.setCreated_at(LocalDateTime.now().toString());
@@ -100,31 +112,27 @@ public class SvcInvoiceImp implements SvcInvoice {
             invoice.setTaxes(0.0);
             invoice.setTotal(0.0);
             
-            // ¡ESTE ES EL CAMBIO CLAVE! Guardamos primero para generar el ID
-            invoice = repo.save(invoice); 
+            invoice = repo.save(invoice); // Obtenemos el ID
 
-            // Variables para acumular totales
             Double total = 0.0;
             Double taxes = 0.0;
             Double subtotal = 0.0;
             
             List<InvoiceItem> invoiceItems = new ArrayList<>();
 
+            // 3. Procesar items y stock
             for (CartItem item : cartItems) {
-                // Validar stock y obtener precio
                 DtoProduct product = svcProduct.getProduct(item.getGtin());
                 if (product.getStock() < item.getQuantity()) {
                     throw new ApiException(HttpStatus.BAD_REQUEST, "Stock insuficiente para: " + product.getProduct());
                 }
 
-                // Calcular montos
                 Double itemTotal = item.getQuantity() * product.getPrice();
                 Double itemTaxes = itemTotal * 0.16;
                 Double itemSubtotal = itemTotal - itemTaxes;
 
-                // Crear Item usando el ID de la factura YA CREADA
                 InvoiceItem invoiceItem = new InvoiceItem();
-                invoiceItem.setInvoice_id(invoice.getInvoice_id()); // Ahora esto NO es null
+                invoiceItem.setInvoice_id(invoice.getInvoice_id());
                 invoiceItem.setGtin(item.getGtin());
                 invoiceItem.setQuantity(item.getQuantity());
                 invoiceItem.setUnit_price(product.getPrice());
@@ -139,20 +147,33 @@ public class SvcInvoiceImp implements SvcInvoice {
                 taxes += itemTaxes;
                 subtotal += itemSubtotal;
 
-                // Actualizar stock
                 svcProduct.updateProductStock(item.getGtin(), product.getStock() - item.getQuantity());
             }
 
-            // 3. Guardar todos los items de golpe
             repoItem.saveAll(invoiceItems);
 
-            // 4. Actualizar la factura con los totales finales
+            // 4. Actualizar factura con totales
             invoice.setTotal(total);
             invoice.setTaxes(taxes);
             invoice.setSubtotal(subtotal);
             invoice.setItems(invoiceItems);
             
-            repo.save(invoice); // Guardamos la actualización
+            repo.save(invoice);
+
+            // --- NUEVO: GUARDAR PUNTOS EXTRA ---
+            
+            // Guardar Dirección
+            ShippingAddress address = purchaseData.getAddress();
+            address.setInvoice_id(invoice.getInvoice_id());
+            repoAddress.save(address);
+            
+            // Guardar Pago
+            PaymentInfo payment = purchaseData.getPayment();
+            payment.setInvoice_id(invoice.getInvoice_id());
+            payment.setAmount(total); // El monto del pago es el total de la factura
+            repoPayment.save(payment);
+
+            // -----------------------------------
 
             // 5. Vaciar carrito
             repoCart.clearCart(userId);

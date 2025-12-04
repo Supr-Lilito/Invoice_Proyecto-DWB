@@ -30,7 +30,7 @@ public class SvcCartImp implements SvcCart {
         List<DtoCartItem> dtoItems = new ArrayList<>();
 
         for (CartItem item : items) {
-            // Buscamos datos frescos del producto para cumplir la Nota 4
+            // Buscamos datos recientes del producto
             DtoProduct product = svcProduct.getProduct(item.getGtin());
             
             DtoCartItem dto = new DtoCartItem(

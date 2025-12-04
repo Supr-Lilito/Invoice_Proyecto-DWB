@@ -62,7 +62,7 @@ public class SvcProductImp implements SvcProduct {
         String token = attributes.getRequest().getHeader("Authorization");
         
         HttpHeaders headers = new HttpHeaders();
-        headers.set("Authorization", token); // Pasamos el Bearer token tal cual
+        headers.set("Authorization", token);
         return headers;
     }
 }
